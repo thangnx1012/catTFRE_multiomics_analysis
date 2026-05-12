@@ -9,7 +9,6 @@ output: html_document
 Spectral counts are normalized as `log2(count + 1)` for the correlation
 analysis. Bins for the alluvial are computed on the **raw** mean count per
 protein × cell line × condition (across the four replicates):
-
 | Bin     | Mean raw count (per condition)   |
 |---------|----------------------------------|
 | Na      | < 1   (essentially undetected)   |
