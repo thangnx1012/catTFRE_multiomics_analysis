@@ -1,5 +1,5 @@
 ---
-title: "MS_Osteosarcoma_FinalRound_C1C4"
+title: "MS_Osteosarcoma_FinalRound_Emilydata_C1C4"
 author: "XuanThangNguyen"
 date: "`r Sys.Date()`"
 output:
@@ -7,17 +7,17 @@ output:
   html_document: default
 ---
 ### Summary 
-This script implements a simple overview of Mass Spectrometry (MS) data analysis with the **DEP package**. 
-The data includes 3 cell lines (HOS, U2OS, and MG63), with 4 biological/technical replicates, which makes a total of 36 single run
+This script implements a simple overview of Mass Spectrometry (MS) data analysis with **DEP package**. 
+The data including 3 cell lines (HOS, U2OS and MG63), with 4 biological/technical replicates, that make total 36 single run
 
 The main steps of analysis:  
 - Exploring data before the differential expression analysis  
 - Importing **MS counts** into **DEP package** list    
 - Performing the analysis with **DESeq2**  
 - Exporting and exploring the results  
-The results are exported into a text file and visualized using ggplot heatmaps and volcano plots. 
+The results are exported into a text file and visualized using ggplot heatmaps and volcano-plots. 
 
-Detailed tutorial for **DEP package** could be accessed here:  
+Detailed tutorial for **DEP package** package could be accessed here:  
 - https://bioconductor.org/packages/devel/bioc/vignettes/DEP/inst/doc/DEP.html
 
 **1. Load package**
@@ -30,6 +30,7 @@ library("DOSE")
 library("openxlsx")
 library("ggplot2")
 library("ggrepel")
+library("ggtext")
 library("SummarizedExperiment")
 library("ComplexHeatmap")
 library("clusterProfiler")
@@ -45,7 +46,7 @@ library("msigdbr")
 # Set directory paths
 root_dir <- rprojroot::find_root(rprojroot::has_dir("catTFRE_MS_FinalRound"))
 analysis_dir <- file.path(root_dir, "catTFRE_MS_FinalRound")
-plots_dir <- file.path(analysis_dir, "DEP_Plots_C1C4_thr3")
+plots_dir <- file.path(analysis_dir, "DEP_Plots_C1C4")
 # Create plots_dir if it doesn't exist
 if (!dir.exists(plots_dir)) {dir.create(plots_dir, recursive = TRUE)}
 
@@ -163,7 +164,7 @@ set.seed(1234)
 # data_filt <- filter_missval(catTFRE_MS, thr = 0) # Most stringent
 # Filter for proteins that are identified in 4 out of 8 replicates of at least one condition
 dim(catTFRE_MS)
-data_filt <- filter_missval(catTFRE_MS, thr = 3)
+data_filt <- filter_missval(catTFRE_MS, thr = 0)
 dim(data_filt)
 
 # Plot a barplot of the number of identified proteins per samples
@@ -323,6 +324,128 @@ ggsave(file = file.path(plots_dir,"Heatmap_Cluster_gene_TF.pdf"), height = 4, wi
 **4.3 Volcano plots of specific contrasts**
 Volcano plots can be used to visualize a specific contrast (comparison between two samples). This allows to inspect the enrichment of proteins between the two samples (x axis) and their corresponding adjusted p value (y axis). This function is based on DEP package.
 
+```{r}
+# Prepare a volcano plot for the contrast "MG63_C1C4_vs_MG63_NE""
+HOS_U2OS_MG63_C1C4_result <- get_results(dep)
+colnames(HOS_U2OS_MG63_C1C4_result)
+
+# ===== Step 1: Classify expression status =====
+prepare_data <- function(res, contrast, tf_list) {
+  p_col <- paste0(contrast, "_p.val")
+  padj_col <- paste0(contrast, "_p.adj")
+  ratio_col <- paste0(contrast, "_ratio")
+  # Prepare the result table
+  res %>%
+    mutate(protein = name,
+           log2_fold_change = .data[[ratio_col]],
+           p_value = .data[[p_col]],
+           p_adj = .data[[padj_col]],
+           TF = if_else(protein %in% tf_list, "YES", "NO"),
+           Expression = case_when(p_value <= 0.05 & log2_fold_change >= 1 & TF == "YES" ~ "TF_Upregulated",
+                                  p_value <= 0.05 & log2_fold_change <= -1 & TF == "YES" ~ "TF_Downregulated",
+                                  p_value <= 0.05 & log2_fold_change >= 1 ~ "Upregulated",
+                                  p_value <= 0.05 & log2_fold_change <= -1 ~ "Downregulated",
+                                  TRUE ~ "Not_significant"))
+}
+# ===== Step 2: Classify TF expression status =====
+prepare_labels <- function(df, genes_of_interest) {
+  df %>%
+    dplyr::filter(protein %in% genes_of_interest) %>%
+    mutate(label_color = case_when(Expression == "TF_Upregulated" ~ "red",
+                                   Expression == "TF_Downregulated" ~ "blue",
+                                   Expression == "Upregulated" ~ "red",
+                                   Expression == "Downregulated" ~ "blue",
+                                   TRUE ~ "grey"))
+}
+
+# ===== Step 3: Plot volcano =====
+plot_volcano <- function(res_df, label_df, title, group_left = "NE", group_right = "C1C4") {
+  # Count DEPs (including TFs)
+  num_up <- sum(res_df$Expression %in% c("Upregulated", "TF_Upregulated"))
+  num_down <- sum(res_df$Expression %in% c("Downregulated", "TF_Downregulated"))
+  tf_up <- sum(res_df$Expression == "TF_Upregulated")
+  tf_down <- sum(res_df$Expression == "TF_Downregulated")
+  subtitle_text <- paste0(
+    "<span style='color:#3182bd;'>Enriched in ", group_left, ": ", num_down, "</span>",
+    " | <span style='color:#fc9272;'>Enriched in ", group_right, ": ", num_up, "</span><br>",
+    "<span style='color:blue;'>TF in ", group_left, ": ", tf_down, "</span>",
+    " | <span style='color:red;'>TF in ", group_right, ": ", tf_up, "</span>")
+  # Add color to lables
+  label_sig <- label_df %>% dplyr::filter(label_color %in% c("red", "blue"))
+  # Plot TF points on top by ordering
+  res_df <- res_df %>%
+    mutate(Expression = factor(Expression,
+                               levels = c("Not_significant", "Upregulated", "Downregulated", 
+                                          "TF_Upregulated", "TF_Downregulated"))) %>%
+    arrange(Expression)  # TFs plotted last = on top
+  # Plot the volcano
+  ggplot(res_df, aes(x = log2_fold_change, y = -log10(p_value))) +
+    geom_point(aes(color = Expression), size = 1.5, alpha = 0.6) +
+    scale_color_manual(values = c("Upregulated" = "#fcbba1",
+                                  "Downregulated" = "#3182bd",
+                                  "Not_significant" = "grey",
+                                  "TF_Upregulated" = "red",
+                                  "TF_Downregulated" = "blue"),
+                       labels = c("Upregulated" = "Up",
+                                  "Downregulated" = "Down",
+                                  "Not_significant" = "NS",
+                                  "TF_Upregulated" = "TF Up",
+                                  "TF_Downregulated" = "TF Down")) +
+    geom_label_repel(data = label_sig,
+                     aes(label = protein, color = Expression),
+                     fill = "white", size = 3, box.padding = 0.5,
+                     point.padding = 0.3, min.segment.length = 0,
+                     segment.color = "gray50", segment.size = 0.4,
+                     max.overlaps = 20, force = 5, force_pull = 0.3,
+                     direction = "both", show.legend = FALSE) +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+    geom_vline(xintercept = c(-1, 1), linetype = "dashed") +
+    theme_minimal() +
+    labs(title = title, subtitle = subtitle_text,
+         x = expression(log[2]~Fold~Change),
+         y = expression(-log[10]~(p_value)),
+         color = "Expression") +
+    theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+          plot.subtitle = element_markdown(hjust = 0.5))
+}
+
+
+
+# Multiple contrasts from same dep result
+# Set genes to label
+genes_to_label <- c("NFIB", "NFIX", "JUNB", "CXXC1", "CREB5",
+                    "RUNX2","FOXO1", "MYBL2", "KMT2A", "HMGA2")
+
+res_HOS_MG63 <- prepare_data(HOS_U2OS_MG63_C1C4_result, "HOS_C1C4_vs_MG63_C1C4", TFs_list$Name)
+labels_HOS_MG63 <- prepare_labels(res_HOS_MG63, genes_to_label)
+
+
+write.xlsx(res_HOS_MG63, file = file.path(plots_dir, "Diffenrential_Enrichment_Protein_HOS_vs_MG63.xlsx"))
+# Plot and save to PDF
+plot_HOS_MG63 <-plot_volcano(res_HOS_MG63, labels_HOS_MG63, group_left = "MG63_C1C4", group_right = "HOS_C1C4",
+                             title= "Diffenrential Enrichment Protein in MG63 vs HOS")
+plot_HOS_MG63_raster <- ggrastr::rasterise(plot_HOS_MG63, layers = "Point", dpi = 600)
+ggsave(plot_HOS_MG63_raster, file = file.path(plots_dir, "volcano_plot_DEP_HOS_vs_MG63_new.pdf"), width = 7, height = 5)
+
+# Prepare each result
+# Set genes to label
+genes_to_label <- c("NFIB", "NFIX", "JUNB", "CREB5","CXXC1",
+                    "RUNX1","RUNX2", "MYBL2", "TGIF2LX", "NR2C2", "HMGA2")
+res_U2OS_MG63 <- prepare_data(HOS_U2OS_MG63_C1C4_result, "U2OS_C1C4_vs_MG63_C1C4", TFs_list$Name)
+labels_U2OS_MG63 <- prepare_labels(res_U2OS_MG63, genes_to_label)
+# Write the table
+write.xlsx(res_U2OS_MG63, file = file.path(plots_dir, "Diffenrential_Enrichment_Protein_U2OS_vs_MG63.xlsx"))
+# Plot and save to PDF
+plot_U2OS_MG63 <- plot_volcano(res_U2OS_MG63, labels_U2OS_MG63, group_left = "MG63_C1C4", group_right = "U2OS_C1C4",
+                   title="Diffenrential Enrichment Protein in MG63 vs U2OS")
+plot_U2OS_MG63_raster <- ggrastr::rasterise(plot_U2OS_MG63, layers = "Point", dpi = 600)
+ggsave(plot_U2OS_MG63_raster, file = file.path(plots_dir, "volcano_plot_DEP_U2OS_vs_MG63_new.pdf"), width = 7, height = 5)
+
+```
+
+
+
+
 ```{r, Volcano Plot}
 # Prepare a volcano plot for the contrast "MG63_C1C4_vs_MG63_NE""
 # ===== Step 1: Classify expression status =====
@@ -379,12 +502,13 @@ plot_volcano <- function(res_df, label_df, title) {
 
 
 # Set genes to label
-genes_to_label <- c("RUNX1","RUNX2", "LRP1", "NFIB", "NFIX", "COL14A1", "JUNB", "FOXO1", "MYH10", "MYBL2", "LUZP1")
+genes_to_label <- c("NFIB", "NFIX", "JUNB", "CXXC1", "CREB5",
+                    "RUNX2","FOXO1", "MYBL2", "KMT2A", "HMGA2")
 # Prepare each result
 res1 <- prepare_data(HOS_MG63_C1C4)
 labels1 <- prepare_labels(res1, genes_to_label)
-library(openxlsx)
-library(ggtext)
+
+
 #write.csv(res1, file = file.path(plots_dir, "volcano_TOBIAS_HOS_vs_MG63.csv"))
 write.xlsx(res1, file = file.path(plots_dir, "Diffenrential_Enrichment_Protein_HOS_vs_MG63.xlsx"))
 # Plot and save to PDF
@@ -393,7 +517,8 @@ p1_raster <- ggrastr::rasterise(p1, layers = "Point", dpi = 600)
 ggsave(p1_raster, file = file.path(plots_dir, "volcano_plot_DEP_HOS_vs_MG63.pdf"), width = 7, height = 5)
 
 # Set genes to label
-genes_to_label <- c("RUNX1","RUNX2", "LUZP1", "NFIB", "NFIX", "COL14A1", "JUNB", "MISP", "MYH10", "MYBL2", "MYO1D")
+genes_to_label <- c("NFIB", "NFIX", "JUNB", "CREB5","CXXC1",
+                    "RUNX1","RUNX2", "MYBL2", "TGIF2LX", "NR2C2", "HMGA2")
 # Prepare each result
 res2 <- prepare_data(U2OS_MG63_C1C4)
 labels2 <- prepare_labels(res2, genes_to_label)
@@ -408,155 +533,283 @@ ggsave(p2_raster, file = file.path(plots_dir, "volcano_plot_DEP_U2OS_vs_MG63.pdf
 ```
 
 
-
 ```{r, Integrate the volcano plot}
-# Merge by protein
-HOS_U2OS_C1C4 <- merge(x = res1, y = res2, by = "protein", all = TRUE)
+# ===== Step 1: Prepare data (add Design_C1 here, not in plot) =====
+prepare_integration_data <- function(dep_results, contrast1, contrast2, tf_list, designed_list = NULL) {
+  ratio1 <- paste0(contrast1, "_ratio")
+  ratio2 <- paste0(contrast2, "_ratio")
+  pval1 <- paste0(contrast1, "_p.val")
+  pval2 <- paste0(contrast2, "_p.val")
+  
+  dep_results %>%
+    mutate(protein = name,
+           lfc_1 = .data[[ratio1]],
+           lfc_2 = .data[[ratio2]],
+           pval_1 = .data[[pval1]],
+           pval_2 = .data[[pval2]],
+           TF = if_else(protein %in% tf_list, "YES", "NO"),
+           Design_C1 = if_else(!is.null(designed_list) & protein %in% designed_list, "YES", "NO"),
+           sig_1 = pval_1 <= 0.05 & abs(lfc_1) >= 1,
+           sig_2 = pval_2 <= 0.05 & abs(lfc_2) >= 1,
+           hit = sig_1 & sig_2,
+           point_group = case_when(TF == "YES" & hit ~ "TF (significant both)",
+                              TF == "YES" & (sig_1 | sig_2) ~ "TF (significant one)",
+                              TF == "YES" ~ "TF (not significant)",
+                              hit ~ "Significant both",
+                              sig_1 | sig_2 ~ "Significant one",
+                              TRUE ~ "Not significant"),
+           quadrant = case_when(sig_1 & lfc_1 < -1 & sig_2 & lfc_2 > 1 ~ "Down_Up",
+                              sig_1 & lfc_1 > 1 & sig_2 & lfc_2 > 1 ~ "Up_Up",
+                              sig_1 & lfc_1 < -1 & sig_2 & lfc_2 < -1 ~ "Down_Down",
+                              sig_1 & lfc_1 > 1 & sig_2 & lfc_2 < -1 ~ "Up_Down",
+                              TRUE ~ "NS"))
+}
 
-# Rename columns for clarity
-colnames(HOS_U2OS_C1C4) <- gsub("\\.x", "_HOS", colnames(HOS_U2OS_C1C4))
-colnames(HOS_U2OS_C1C4) <- gsub("\\.y", "_U2OS", colnames(HOS_U2OS_C1C4))
+# ===== Step 2: Plot integration =====
+plot_integration <- function(df, label_genes, title, xlab_name = "HOS/MG63", ylab_name = "U2OS/MG63") {
+  quad_counts <- df %>% dplyr::filter(quadrant != "NS") %>% dplyr::count(quadrant)
+  label_text <- paste0(quad_counts$quadrant, ": ", quad_counts$n, collapse = "\n")
+  
+  df <- df %>%
+    mutate(point_group = factor(point_group,
+      levels = c("Not significant", "Significant one", "Significant both",
+                 "TF (not significant)", "TF (significant one)", "TF (significant both)"))) %>%
+    arrange(point_group)
+  
+  label_df <- df %>% dplyr::filter(protein %in% label_genes)
+  # plot the integration
+  ggplot(df, aes(x = lfc_1, y = lfc_2)) +
+    geom_point(aes(color = point_group, alpha = point_group, shape = Design_C1), size = 1.5) +
+    scale_color_manual(values = c("Not significant" = "grey80",
+                                  "Significant one" = "grey80",
+                                  "Significant both" = "pink",
+                                  "TF (not significant)" = "grey80",
+                                  "TF (significant one)" = "grey80",
+                                  "TF (significant both)" = "red")) +
+    scale_alpha_manual(values = c("Not significant" = 0.3,
+                                  "Significant one" = 0.5,
+                                  "Significant both" = 0.7,
+                                  "TF (not significant)" = 0.5,
+                                  "TF (significant one)" = 0.7,
+                                  "TF (significant both)" = 1)) +
+    scale_shape_manual(values = c("YES" = 17, "NO" = 16)) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    geom_vline(xintercept = 0, linetype = "dashed") +
+    geom_label_repel(data = label_df,
+                     aes(label = protein, color = point_group),
+                     fill = "white", size = 3, box.padding = 0.5,
+                     point.padding = 0, min.segment.length = 0,
+                     segment.color = "gray50", segment.size = 0.4,
+                     max.overlaps = 20, force = 5, force_pull = 0.3,
+                     show.legend = FALSE) +
+    annotate("label", x = Inf, y = -Inf, label = label_text,
+             hjust = 1.1, vjust = -0.1, size = 3.5, fill = "white") +
+    theme_minimal() +
+    labs(title = title,
+         x = bquote(log[2]~FC~(.(xlab_name))),
+         y = bquote(log[2]~FC~(.(ylab_name))),
+         color = "Category", alpha = "Category", shape = "Designed TF") +
+    theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+          legend.position = "right") +
+    guides(alpha = "none")
+}
 
-# Create hit and label columns
-HOS_U2OS_C1C4 <- HOS_U2OS_C1C4 %>%
-  mutate(hit = ifelse((Expression_HOS %in% c("Upregulated", "Downregulated")) &
-                        (Expression_U2OS %in% c("Upregulated", "Downregulated")), "Yes", "No"),
-         labels = ifelse(hit == "Yes", protein, ""))
+# Read the designed TF list
+designed_TFs <- readxl::read_excel(file.path(analysis_dir, "catTFRE_designed_TFs_126_TFs.xlsx"))
 
-
-summary_counts <- HOS_U2OS_C1C4 %>%
-  mutate(group = case_when(Expression_HOS == "Downregulated" &  Expression_U2OS == "Upregulated" ~ "Cluster_A_DoUp",
-                           Expression_HOS == "Upregulated" & Expression_U2OS == "Upregulated" ~ "Cluster_B_UpUp",
-                           Expression_HOS == "Downregulated" & Expression_U2OS == "Downregulated" ~ "Cluster_C_DoDo",
-                           Expression_HOS == "Upregulated" & Expression_U2OS == "Downregulated" ~ "Cluste_D_UpDo",
-                           TRUE ~ "None significant")) %>%
-  dplyr::count(group)
-
-summary_counts
-label_text <- paste0(summary_counts$group, ": ", summary_counts$n, collapse = "\n")
-
-
-# Define your genes of interest
-genes_to_label <- c("RUNX2", "SNAI2", "MYLB2","FOXO1", "MYH11","CHD7", "HMGA2", "MYBL2", "KRT80",
-                    "JUNB", "COL14A1","NFIX", "NFIB", "PITX1", "NFIA", "JUND")
-
-# Filter for those genes
-selected_genes <- HOS_U2OS_C1C4 %>%
-  dplyr::filter(protein %in% genes_to_label) %>%
-  mutate(label_color = case_when(
-    log2_fold_change_HOS >= 1 | log2_fold_change_U2OS >= 1 ~ "red",       # Upregulated
-    log2_fold_change_HOS <= -1 | log2_fold_change_U2OS <= -1 ~ "blue",    # Downregulated
-    TRUE ~ "grey"))
-
-ggplot(HOS_U2OS_C1C4, aes(x = log2_fold_change_HOS, y = log2_fold_change_U2OS,
-                        size = `p_value_-log10_HOS`, alpha = hit)) +
-  geom_point(aes(colour = `p_value_-log10_U2OS`)) +
-  geom_hline(yintercept = 0, linetype = 2) +
-  geom_vline(xintercept = 0, linetype = 2) +
-#  scale_colour_gradientn(colors = rainbow(3)) +
-  scale_colour_gradient( low = "white", high = "red", name = expression(-log[10]*"(pValueU2OS/MG63)")) +
-  ggrepel::geom_label_repel(
-    data = selected_genes %>% dplyr::filter(label_color %in% c("red", "blue")),
-    aes(label = protein),
-    color = selected_genes %>% dplyr::filter(label_color %in% c("red", "blue")) %>% pull(label_color),
-    fill = "white", size = 3, box.padding = 0.5,
-    point.padding = 0, min.segment.length = 0, segment.color = "gray50", segment.size = 0.4,
-    max.overlaps = Inf, force = 5, force_pull = 0.3, direction = "both", nudge_y = 0.05, show.legend = FALSE) +
-  annotate("label", x = Inf, y = -Inf, label = label_text, hjust = 1.1, vjust = -0.1, size = 3.5, fill = "white") +
-  labs(title = "Integration log2Foldchange of HOS and U2OS versus MG63 (Selected Genes)",
-       x = expression("Log"[2]*"(Fold change HOS/MG63)"),
-       y = expression("Log"[2]*"(Fold change U2OS/MG63)"),
-       colour = expression(-log[10]*"(pValueU2OS/MG63)"),
-       size = expression(-log[10]*"(pValueHOS/MG63)"))
-ggsave(filename = file.path(plots_dir,"Integration_log2Foldchange_selectedGenes.pdf"), height = 6, width = 8)
+# Plot the integration plot
+int_df <- prepare_integration_data(HOS_U2OS_MG63_C1C4_result,
+                                   contrast1 = "HOS_C1C4_vs_MG63_C1C4",
+                                   contrast2 = "U2OS_C1C4_vs_MG63_C1C4",
+                                   designed_list = designed_TFs$TF_design,
+                                   tf_list = TFs_list$Name)
+write.xlsx(int_df, file = file.path(plots_dir, "HOS_U2OS_MG63_C1C4_result.xlsx"))
+# add gene to labeling
+genes_to_label <- c("RUNX2", "HMGA2", "NR2C2", "ADNP", "UBP1",
+                     "JUNB", "NFIX", "NFIB", "PITX1", "JUND")
+# ggplot
+plot_integration(int_df, genes_to_label,
+                 title = "Integration HOS/MG63 vs U2OS/MG63 C1C4",
+                 xlab_name = "HOS/MG63",
+                 ylab_name = "U2OS/MG63")
+ggsave(file = file.path(plots_dir, "HOS_U2OS_MG63_C1C4_integrate.pdf"), width=6, height=4)
 
 ```
 
 
-
+#### 4.5. Visualization of functional enrichment result using clusterProfile R package
 ```{r}
-# Define your TF + Epifactor symbols
-target_genes <- unique(c(TFs_list$Gene_Symbol, Epifactor_list$HGNC_symbol))
+# Get significant genes from each contrast
+sig_HOS <- HOS_U2OS_MG63_C1C4_result %>%
+  dplyr::filter(HOS_C1C4_vs_MG63_C1C4_p.val <= 0.05 & abs(HOS_C1C4_vs_MG63_C1C4_ratio) >= 1) %>%
+  pull(name)
+sig_U2OS <- HOS_U2OS_MG63_C1C4_result %>%
+  dplyr::filter(U2OS_C1C4_vs_MG63_C1C4_p.val <= 0.05 & abs(U2OS_C1C4_vs_MG63_C1C4_ratio) >= 1) %>%
+  pull(name)
 
-# Extract downregulated proteins that are TFs/Epifactors
-res1_down <- res1 %>%
-  dplyr::filter(Expression == "Downregulated", protein %in% target_genes) %>%
-  pull(protein)
-res2_down <- res2 %>%
-  dplyr::filter(Expression == "Downregulated", protein %in% target_genes) %>%
-  pull(protein)
-# Find the intersection (common proteins)
-common_downregulated <- intersect(res1_down, res2_down)
-# View result
-common_downregulated
+# Union for heatmap
+gene_plot_heatmap <- unique(c(sig_HOS, sig_U2OS))
+# Build heatmap matrix
+heatmap_matrix <- assay(data_imp)[rownames(assay(data_imp)) %in% gene_plot_heatmap, ]
+heatmap_z <- t(scale(t(heatmap_matrix)))
+# TF annotation
+tf_annot <- rownames(heatmap_z) %in% TFs_list$Name
+row_ha <- rowAnnotation(TF = tf_annot,
+                        col = list(TF = c("TRUE" = "darkgreen", "FALSE" = "grey90")))
+# Counts
+tf_up_HOS <- sum(rownames(heatmap_z) %in% sig_HOS & 
+                  HOS_U2OS_MG63_C1C4_result$HOS_C1C4_vs_MG63_C1C4_ratio[match(rownames(heatmap_z), HOS_U2OS_MG63_C1C4_result$name)] > 1 &
+                  rownames(heatmap_z) %in% TFs_list$Name)
 
-# Extract downregulated proteins that are TFs/Epifactors
-res1_up <- res1 %>%
-  dplyr::filter(Expression == "Upregulated", protein %in% target_genes) %>%
-  pull(protein)
-res2_up <- res2 %>%
-  dplyr::filter(Expression == "Upregulated", protein %in% target_genes) %>%
-  pull(protein)
-# Find the intersection (common proteins)
-common_upregulated <- intersect(res1_up, res2_up)
-# View result
-common_upregulated
+# Simpler approach for counts — annotate the result table once
+dep_annot <- HOS_U2OS_MG63_C1C4_result %>%
+  mutate(TF = if_else(name %in% TFs_list$Name, "YES", "NO"),
+         HOS_expr = case_when(HOS_C1C4_vs_MG63_C1C4_p.adj <= 0.05 & HOS_C1C4_vs_MG63_C1C4_ratio >= 1 ~ "Up",
+                              HOS_C1C4_vs_MG63_C1C4_p.adj <= 0.05 & HOS_C1C4_vs_MG63_C1C4_ratio <= -1 ~ "Down",
+                              TRUE ~ "NS"),
+         U2OS_expr = case_when(U2OS_C1C4_vs_MG63_C1C4_p.adj <= 0.05 & U2OS_C1C4_vs_MG63_C1C4_ratio >= 1 ~ "Up",
+                               U2OS_C1C4_vs_MG63_C1C4_p.adj <= 0.05 & U2OS_C1C4_vs_MG63_C1C4_ratio <= -1 ~ "Down",
+                               TRUE ~ "NS"))
+
+column_title <- paste0("HOS: Up=", sum(dep_annot$HOS_expr == "Up"),
+                       " (TF=", sum(dep_annot$HOS_expr == "Up" & dep_annot$TF == "YES"), ")",
+                       " Down=", sum(dep_annot$HOS_expr == "Down"),
+                       " (TF=", sum(dep_annot$HOS_expr == "Down" & dep_annot$TF == "YES"), ")",
+                       "\nU2OS: Up=", sum(dep_annot$U2OS_expr == "Up"),
+                       " (TF=", sum(dep_annot$U2OS_expr == "Up" & dep_annot$TF == "YES"), ")",
+                       " Down=", sum(dep_annot$U2OS_expr == "Down"),
+                       " (TF=", sum(dep_annot$U2OS_expr == "Down" & dep_annot$TF == "YES"), ")")
+library(ComplexHeatmap)
+library(circlize)
+
+col_fun <- colorRamp2(c(-2, 0, 2),
+                      c("skyblue", "white", "purple"))
+
+# column order
+col_order <- c(grep("MG63", colnames(heatmap_z), value = TRUE),
+               grep("U2OS", colnames(heatmap_z), value = TRUE),
+               grep("HOS",  colnames(heatmap_z), value = TRUE))
+
+heatmap_z_ordered <- heatmap_z[, col_order]
+# group labeling
+group_labels <- gsub("_C1C4_rep_\\d+$", "", colnames(heatmap_z_ordered))
+
+col_annot <- HeatmapAnnotation(Group = group_labels,
+                               col = list(Group = c("MG63" = "grey","U2OS" = "orange","HOS"  = "steelblue")))
+# Heatmap
+HOS_MG63_C1C4_heatmap <- Heatmap(heatmap_z_ordered,
+                                 name = "Z-score",
+                                 column_title = column_title,
+                                 top_annotation = col_annot,
+                                 right_annotation = row_ha,
+                                 col = col_fun,
+                                 show_row_names = FALSE,
+                                 cluster_rows = TRUE,
+                                 cluster_columns = FALSE,
+                                 row_split = 5,
+                                 row_gap = unit(2, "mm"))
+
+pdf(file.path(plots_dir,"HOS_MG63_C1C4_catTFRE_complexHeatmap.pdf"),height = 10,width = 4.5)
+draw(HOS_MG63_C1C4_heatmap)
+dev.off()
+
 ```
 
 
 **4.5. Visualization of functional enrichment result using clusterProfile R package**
 ```{r}
-## Prepare the geneList with gene name/EntrezID in row and a column of log2Folchange
-# feature 1: numeric vector with logFoldChange 
-geneList_HOS_MG63_C1C4 <- HOS_MG63_C1C4[,2]
-geneList_U2OS_MG63_C1C4 <- U2OS_MG63_C1C4[,2]
-# feature 2: named vector: convert gene Symbol to EntrezID will be a dataframe with 2 column, then select the EntrezID column only
-names(geneList_HOS_MG63_C1C4) <-  bitr(HOS_MG63_C1C4[,1], fromType = "SYMBOL", toType = "ENTREZID", OrgDb = "org.Hs.eg.db")[, 2]
-names(geneList_U2OS_MG63_C1C4) <-  bitr(U2OS_MG63_C1C4[,1], fromType = "SYMBOL", toType = "ENTREZID", OrgDb = "org.Hs.eg.db")[, 2] 
-# feature 3: decreasing orde
-geneList_HOS_MG63_C1C4 <- sort(geneList_HOS_MG63_C1C4, decreasing = TRUE)
-geneList_U2OS_MG63_C1C4 <- sort(geneList_U2OS_MG63_C1C4, decreasing = TRUE)
+library(dplyr)
+library(msigdbr)
+library(clusterProfiler)
+
+# ===== Step 1: Prepare ranked gene list from DEP results =====
+prepare_genelist <- function(dep_results, contrast) {
+  ratio_col <- paste0(contrast, "_ratio")
+  dep_results %>%
+    dplyr::filter(!is.na(.data[[ratio_col]])) %>%
+    arrange(desc(.data[[ratio_col]])) %>%
+    {setNames(sort(.[[ratio_col]], decreasing = TRUE),
+              .$ID[order(-.[[ratio_col]])])}
+}
+
+# ===== Step 2: Run GSEA for a gene set category =====
+run_gsea <- function(geneList, category = "H", subcategory = NULL, pval = 0.05) {
+  gene_sets <- msigdbr(species = "Homo sapiens", category = category, subcategory = subcategory) %>%
+    dplyr::select(gs_name, gene_symbol)
+  
+  GSEA(geneList = geneList,
+       TERM2GENE = gene_sets,
+       pvalueCutoff = pval,
+       verbose = FALSE)
+}
+
+# ===== Step 3: Subset top N up and down =====
+subset_gsea_top <- function(gsea_res, n = 5) {
+  top_up <- gsea_res@result %>%
+    dplyr::filter(NES > 0) %>%
+    arrange(p.adjust) %>%
+    slice_head(n = n) %>%
+    pull(ID)
+  
+  top_down <- gsea_res@result %>%
+    dplyr::filter(NES < 0) %>%
+    arrange(p.adjust) %>%
+    slice_head(n = n) %>%
+    pull(ID)
+  
+  gsea_sub <- gsea_res
+  gsea_sub@result <- gsea_res@result %>%
+    dplyr::filter(ID %in% c(top_up, top_down))
+  return(gsea_sub)
+}
+
+# ===== Step 4: Plot ridge + dot =====
+plot_gsea <- function(gsea_res, contrast, plots_dir,
+                      label_activated = NULL, label_suppressed = NULL,
+                      top_n = 5, height_ridge = 6, height_dot = 6, width = 8) {
+  gsea_sub <- subset_gsea_top(gsea_res, n = top_n)
+  # Auto-generate labels from contrast if not provided
+  if (is.null(label_activated)) {
+    parts <- strsplit(contrast, "_vs_")[[1]]
+    label_activated <- parts[1]
+    label_suppressed <- parts[2]
+  }
+  # Ridge plot
+  p_ridge <- ridgeplot(gsea_sub, showCategory = top_n * 2)
+  ggsave(file.path(plots_dir, paste0(contrast, "_ridgeplot.pdf")),
+         p_ridge, height = height_ridge, width = width)
+  # Dot plot
+  p_dot <- dotplot(gsea_sub, showCategory = top_n * 2, split = ".sign") +
+    facet_grid(~ .sign, labeller = labeller(
+      .sign = c("activated" = label_activated, "suppressed" = label_suppressed)))
+  ggsave(file.path(plots_dir, paste0(contrast, "_dotplot.pdf")),
+         p_dot, height = height_dot, width = width)
+  
+  return(list(ridge = p_ridge, dot = p_dot, gsea_sub = gsea_sub))
+}
 
 
-```
 
-
-#### Running the GO term based on gene list that extracted from heatmap using clusterProfile R package
-```{r, Cluster genelist and enrichment analysis}
-# check the column in org.Hs.eg.db package: AnnotationDbi::columns(org.Hs.eg.db)
-# Convert gene_cluster into list of gene names with EntrezID is required for compareCluster function
-cluster_genelist <- bitr(gene_cluster$GeneID, fromType = "SYMBOL",
-                        toType = "ENTREZID",
-                        OrgDb = "org.Hs.eg.db")
-cluster_genelist <- split(x = cluster_genelist$ENTREZID, f = gene_cluster$Cluster)     
-str(cluster_genelist)
-# We use a named list of gene IDs as the input that passed to the geneCluster parameter. function will be one of "groupGO", "enrichGO", "enrichKEGG", "enrichDO" or "enrichPathway"
-cluster_compare_enrichGO <- compareCluster(geneCluster = cluster_genelist, 
-                                           OrgDb='org.Hs.eg.db', fun = enrichGO) 
-cluster_compare_KEGG <- compareCluster(geneCluster = cluster_genelist, fun = enrichKEGG,
-                                       organism="hsa", pvalueCutoff=0.05) 
-
-
-# To easy working with gene list, we use setReadable function to translate ENSEMBL/geneID to gene symbol.
-cluster_compare_enrichGO <- setReadable(cluster_compare_enrichGO, OrgDb = org.Hs.eg.db, keyType="ENTREZID")
-cluster_compare_KEGG <- setReadable(cluster_compare_KEGG, OrgDb = org.Hs.eg.db, keyType="ENTREZID")
-# Visualize the cluster compare
-# pdf("dotplot_OS_MS_C1C4C4_catTFRE_TFs-enrichGO_101223.pdf") # starts writing a PDF to file
-dotplot(cluster_compare_enrichGO, showCategory=10) + ggtitle("GO-Term Enrichment comparison all cluster") # showCategory=10
-# dev.off()
-
-# pdf("dotplot_OS_MS_C1C4C4_catTFRE_TFs-KEGG_101223.pdf") # starts writing a PDF to file
-dotplot(cluster_compare_KEGG, showCategory=10) + ggtitle("KEGG Enrichment comparison all cluster")
-# dev.off()
-
-# Gene-Concept Network
-library("ggrepel")
-cnetplot(cluster_compare_enrichGO, categorySize="pvalue", max.overlaps = 200)
-# library(scales)
-#  + scale_color_gradientn(name = "fold change", colours = c("blue","white","red"), 
-#        values = rescale(c(min.value, 0, max.value)), limits=c(min.value, max.value),
-#        breaks=c(min.value , 0, max.value) )
-#circular = TRUE,
+# ===== Run everything for multiple contrasts =====
+contrasts <- c("HOS_C1C4_vs_MG63_C1C4", "U2OS_C1C4_vs_MG63_C1C4")
+results <- list()
+for (contrast in contrasts) {
+  # Prepare gene list
+  geneList <- prepare_genelist(HOS_U2OS_MG63_C1C4_result, contrast)
+  # Hallmark
+  gsea_hallmark <- run_gsea(geneList, category = "H")
+  p_hallmark <- ridgeplot(gsea_hallmark)
+  ggsave(file.path(plots_dir, paste0(contrast, "_hallmark_ridgeplot.pdf")),
+         p_hallmark, height = 4, width = 8)
+  # GO:BP
+  gsea_gobp <- run_gsea(geneList, category = "C5", subcategory = "GO:BP")
+  plots <- plot_gsea(gsea_gobp, contrast, plots_dir)
+  # Store results
+  results[[contrast]] <- list(geneList = geneList,
+                              hallmark = gsea_hallmark,
+                              gobp = gsea_gobp,
+                              plots = plots)
+}
 
 ```
 
@@ -597,97 +850,12 @@ pathwaysDF <- as.data.frame(msigdbr("hs", category="H")) #subcategory = "")
 pathways <- split(as.character(pathwaysDF$entrez_gene), pathwaysDF$gs_name)
 
 # Run the GSEA analysis
-set.seed(1)
+set.seed(1234)
 fgsea_MS <- geseca(pathways, heatmap_data, minSize = 10, maxSize = 500)
 # Plot the pathway
-# pdf(file = "GSEA_All_MS_Expression_gene_pathway_top20.pdf", height = 11, width = 11)
-plotGesecaTable(fgsea_MS |> head(20), pathways, E=heatmap_data, titles = colnames(heatmap_data))
-# dev.off()
-```
-
-
-
-```{r, MSigDb analysis}
-## MSigDb analysis
-library(msigdbr)
-MSigDb_list <- msigdbr(species = "Homo sapiens", category = "C6") %>% # Human C6, oncogenic gene sets
-  dplyr::select(gs_name, entrez_gene)
-head(MSigDb_list)
-MSigDb_HOS_MG63_C1C4 <- enricher(names(geneList_HOS_MG63_C1C4), TERM2GENE=MSigDb_list)
-head(MSigDb_HOS_MG63_C1C4)
-MSigDb_U2OS_MG63_C1C4 <- enricher(names(geneList_U2OS_MG63_C1C4), TERM2GENE=MSigDb_list)
-head(MSigDb_U2OS_MG63_C1C4)
-
-## Run the GSEA analysis for the list of protein expression 
-HOS_MG63_C1C4_DO <- gseDO(geneList_HOS_MG63_C1C4)
-head(HOS_MG63_C1C4_DO)
-U2OS_MG63_C1C4_DO <- gseDO(geneList_U2OS_MG63_C1C4)
-head(U2OS_MG63_C1C4_DO)
-# running score and preranked list of GSEA result
-# p1 <- gseaplot(U2OS_MG63_C1C4_DO, geneSetID = 1, by = "runningScore", title = U2OS_MG63_C1C4_DO$Description[1])
-# p2 <- gseaplot(U2OS_MG63_C1C4_DO, geneSetID = 1, by = "preranked", title = U2OS_MG63_C1C4_DO$Description[1])
-# p3 <- gseaplot(U2OS_MG63_C1C4_DO, geneSetID = 1, title = U2OS_MG63_C1C4_DO$Description[1])
-# cowplot::plot_grid(p1, p2, p3, ncol=1, labels=LETTERS[1:3])
-library(enrichplot)
-# gseaplot2(U2OS_MG63_C1C4_DO, geneSetID = 1, title = U2OS_MG63_C1C4_DO$Description[1])
-# gseaplot2(U2OS_MG63_C1C4_DO, geneSetID = 1:1, pvalue_table = TRUE)
-## Running the Gene Set Enrichment Analysis (GSEA) based on gene list that extracted from heatmap
-
-#### 
-# https://bioinformatics-core-shared-training.github.io/cruk-summer-school-2021/RNAseq/Markdowns/12_Gene_set_testing.html
-## Gene Set Enrichment Analysis (GSEA): require logFoldchange of gene list. then can filtering the LFC names(geneList)[abs(geneList) > 1.5]
-# U2OS_MG63_C1C4_GO <- gseGO(geneList   = names(geneList_U2OS_MG63_C1C4),
-#                         OrgDb      = org.Hs.eg.db, ont = "BP", #"CC" or "MF"
-#                         minGSSize    = 100, maxGSSize    = 500,
-#                         pvalueCutoff = 0.05, verbose      = FALSE )
-# head(U2OS_MG63_C1C4_GO)
-# Visualize the enrichment plot with one or multiple gene set
-# gseaplot2(U2OS_MG63_C1C4_GO, geneSetID=1, title = U2OS_MG63_C1C4_GO$Description[1])
-# gseaplot2(U2OS_MG63_C1C4_GO, geneSetID = 1:3, pvalue_table = TRUE,color = c("#E495A5", "#86B875", "#7DB0DD"))
-
-# https://github.com/junjunlab/GseaVis/wiki/GseaVis-%E4%B8%BA%E4%BD%A0%E7%9A%84%E9%80%9A%E8%B7%AF%E5%9F%BA%E5%9B%A0%E6%B7%BB%E5%8A%A0%E7%83%AD%E5%9B%BE
-
-
-## Barplots of a protein of interest
-# Plot a barplot for RUNX2, FOXO1 and LRRFIP2
-plot_single(dep, proteins = c("RUNX2", "FOXO1", "CHD7", "HMGA2")) #
-# Plot a barplot for the protein USP15 with the data centered
-plot_single(dep, proteins = "RUNX2", type = "centered")
-plot_single(dep, proteins = "FOXO1", type = "centered")
-plot_single(dep, proteins = "CHD7", type = "centered")
-plot_single(dep, proteins = "HMGA2", type = "centered")
-
-## Frequency plot of significant proteins and overlap of conditions
-# Plot a frequency plot of significant proteins for the different conditions
-# plot_cond(dep)
-```
-
-# 4.6 Results table
-```{r}
-## 
-# Generate a results table
-data_results <- get_results(dep)
-# write.xlsx(data_results, file = "MS_Data_Results_Round4_sumC1C4_thr3.xlsx")
-
-data_results_TFs <- get_results(dep[row.names(dep) %in% TFs_list$Gene_Symbol, ])
-# write.xlsx(data_results_TFs, file = "MS_Data_Results_Round4_sumC1C4_TFsONLY_thr3.xlsx")
-
-# Number of significant proteins
-data_results_TFs %>% dplyr::filter(HOS_C1C4_vs_MG63_C1C4_significant) %>% nrow() # 28
-data_results_TFs %>% dplyr::filter(U2OS_C1C4_vs_MG63_C1C4_significant) %>% nrow() # 22
-
-# intersect((data_results_TFs %>% dplyr::filter(HOS_C1C4_vs_MG63_C1C4_significant))$name,
-#           (data_results_TFs %>% dplyr::filter(U2OS_C1C4_vs_MG63_C1C4_significant))$name)
-
-
-# Generate a data.frame from the resulting SummarizedExperiment object
-# You might want to obtain an ordinary data.frame of the results. For this purpose, the package provides functions to convert SummarizedExperiment objects to data.frames. get_df_wide will generate a wide table, whereas get_df_long will generate a long table.
-
-# Generate a wide data.frame
-df_wide <- get_df_wide(dep)
-
-# Generate a long data.frame
-df_long <- get_df_long(dep)
+pdf(file = "OS_catTFRE_C1C4_GSEA_hallmark_top10.pdf", height = 5.5, width = 14)
+plotGesecaTable(fgsea_MS |> head(10), pathways, E=heatmap_data, titles = colnames(heatmap_data))
+dev.off()
 ```
 
 
